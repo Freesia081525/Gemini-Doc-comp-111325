@@ -28,7 +28,7 @@ export const runOcrOnImage = async (ai: GoogleGenAI, imageDataBase64: string, mo
 
 export const generateSummaryAndKeywords = async (ai: GoogleGenAI, finalAgentOutput: string, doc1Text: string, doc2Text: string): Promise<{ summary: string; keywords: string[] }> => {
     const response = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash',
         contents: `Based on the following analysis of two documents, perform two tasks:
         1.  Write a comprehensive, well-structured summary of the entire analysis in Markdown format.
         2.  Extract the top 20 most relevant keywords from the analysis.
