@@ -1,497 +1,337 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, PieChart, Pie, Cell, Legend,
-} from 'recharts';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { Agent, AgentStatus, DocumentFile, DocumentType, AnalysisResult } from './types';
-import { DEFAULT_AGENTS, FLOWER_THEMES, LOCALIZATION } from './constants';
-import AgentStep from './components/AgentStep';
-import { PlusIcon, PlayIcon, UploadIcon, DocumentIcon, FileTextIcon, SettingsIcon, PaletteIcon, LanguageIcon, SunIcon, MoonIcon, KeyIcon } from './components/icons';
-
-declare const pdfjsLib: any;
-
-// --- Internal Services (Replaces external file to prevents import errors) ---
-
-const MODEL_NAME = "gemini-2.5-flash"; // Or gemini-2.5-flash
-
-async function processAgentPrompt(apiKey: string, systemPrompt: string, userContent: string): Promise<string> {
-    if (!apiKey) throw new Error("API Key is missing. Please add it in Settings.");
-    
-    const client = new GoogleGenAI({ apiKey });
-    const response = await client.models.generateContent({
-        model: MODEL_NAME,
-        contents: [
-            { role: 'user', parts: [{ text: systemPrompt + "\n\n--- Document Content ---\n" + userContent }] }
-        ],
-        config: { temperature: 0.2 }
-    });
-    
-    return response.text() || "No output generated.";
-}
-
-async function performOcr(apiKey: string, base64Image: string): Promise<string> {
-    if (!apiKey) throw new Error("API Key is missing for OCR.");
-
-    const client = new GoogleGenAI({ apiKey });
-    const response = await client.models.generateContent({
-        model: MODEL_NAME,
-        contents: [
-            {
-                role: 'user',
-                parts: [
-                    { text: "Transcribe the text in this document page exactly." },
-                    { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
-                ]
-            }
-        ]
-    });
-
-    return response.text() || "";
-}
-
-// --- Hooks ---
-
-function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [storedValue, setStoredValue] = useState<T>(() => {
-    try {
-      const item = window.localStorage.getItem(key);
-      return item ? JSON.parse(item) : initialValue;
-    } catch (error) {
-      console.error(error);
-      return initialValue;
-    }
-  });
-
-  const setValue: React.Dispatch<React.SetStateAction<T>> = (value) => {
-    try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value;
-      setStoredValue(valueToStore);
-      window.localStorage.setItem(key, JSON.stringify(valueToStore));
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  return [storedValue, setValue];
-}
+import { FLOWER_THEMES, TRANSLATIONS, DEFAULT_AGENTS } from './constants';
+import { Language, Theme, ThemeKey, Agent, DocumentState, GraphData } from './types';
+import { Sidebar } from './components/Sidebar';
+import { DocumentInput } from './components/DocumentInput';
+import { AgentEditor } from './components/AgentEditor';
+import { SummaryView } from './components/SummaryView';
+import { generateSummaryAndKeywords, generateFollowUpQuestions, generateKeywordGraph } from './services/geminiService';
+import { BookOpen, Bot, BrainCircuit, ChevronRight, FileText, KeyRound, WandSparkles } from 'lucide-react';
+import { AgentExecutionView } from './components/AgentExecutionView';
 
 const App: React.FC = () => {
-  // UI State
-  const [themeIndex, setThemeIndex] = useLocalStorage('themeIndex', 0);
-  const [isDarkMode, setIsDarkMode] = useLocalStorage('isDarkMode', true);
-  const [lang, setLang] = useLocalStorage<'en' | 'zh-TW'>('lang', 'en');
-  const [apiKey, setApiKey] = useLocalStorage('gemini_api_key', ''); // NEW: Persist API Key
-  const [activeTab, setActiveTab] = useState('workflow');
+    const [theme, setTheme] = useState<ThemeKey>('櫻花 Cherry Blossom');
+    const [darkMode, setDarkMode] = useState<boolean>(false);
+    const [language, setLanguage] = useState<Language>('en');
+    
+    // New states for API key and model selection
+    const [apiKey, setApiKey] = useState<string>('');
+    const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
 
-  const T = useMemo(() => LOCALIZATION[lang], [lang]);
-  const activeTheme = useMemo(() => FLOWER_THEMES[themeIndex], [themeIndex]);
+    const [doc1, setDoc1] = useState<DocumentState>({ id: 1, content: '', file: null, type: 'text' });
+    const [doc2, setDoc2] = useState<DocumentState>({ id: 2, content: '', file: null, type: 'text' });
+    const [agents, setAgents] = useState<Agent[]>(DEFAULT_AGENTS);
+    const [agentCount, setAgentCount] = useState<number>(3);
+    const [agentOutputs, setAgentOutputs] = useState<string[]>(Array(DEFAULT_AGENTS.length).fill(''));
+    
+    const [summary, setSummary] = useState('');
+    const [keywords, setKeywords] = useState<string[]>([]);
+    const [graphData, setGraphData] = useState<GraphData | null>(null);
+    const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
 
-  // App Logic State
-  const [documentFile, setDocumentFile] = useState<DocumentFile>({ id: 'initial', name: 'No document loaded', type: DocumentType.EMPTY, content: '' });
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isOcrProcessing, setIsOcrProcessing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  
-  // Apply theme and dark mode
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', isDarkMode);
-  }, [isDarkMode]);
+    const [isLoading, setIsLoading] = useState(false);
+    const [currentStep, setCurrentStep] = useState(0);
+    const [currentlyExecutingAgentIndex, setCurrentlyExecutingAgentIndex] = useState<number | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    const colors = activeTheme.colors;
-    root.style.setProperty('--color-primary', colors.primary);
-    root.style.setProperty('--color-bg-light', colors.bg);
-    root.style.setProperty('--color-text-light', colors.text);
-  }, [activeTheme]);
+    const t = TRANSLATIONS[language];
+    const currentTheme: Theme = FLOWER_THEMES[theme];
+    
+    // AI client initialization is now memoized based on the user-provided API key.
+    // It prioritizes the key from the input field and falls back to the environment variable.
+    const ai = useMemo(() => {
+        const effectiveApiKey = apiKey || (typeof process !== 'undefined' && process.env.API_KEY);
+        if (!effectiveApiKey) {
+            return null;
+        }
+        try {
+             return new GoogleGenAI({ apiKey: effectiveApiKey });
+        } catch(e: any) {
+            console.error("Error initializing GoogleGenAI client:", e);
+            // Set an error for the user to see
+            setError(`Failed to initialize AI client. Please check the API key format. Details: ${e.message}`);
+            return null;
+        }
+    }, [apiKey]);
 
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    // This effect updates all agents to use the newly selected model.
+    useEffect(() => {
+        setAgents(prevAgents =>
+            prevAgents.map(agent => ({ ...agent, model: selectedModel }))
+        );
+    }, [selectedModel]);
 
-    if (!apiKey && file.type === 'application/pdf') {
-        alert("Please enter your Google Gemini API Key in settings to process PDFs (OCR).");
-        // We continue, but OCR will fail if key is missing
-    }
 
-    resetState();
-    if (file.type === 'application/pdf') {
-      setDocumentFile({ id: file.name, name: file.name, type: DocumentType.PDF, content: 'Processing PDF...', file });
-      await processPdf(file);
-    } else if (file.type === 'text/plain') {
-      const content = await file.text();
-      setDocumentFile({ id: file.name, name: file.name, type: DocumentType.TXT, content, file });
-    }
-  };
-  
-  const resetState = () => {
-      setAgents([]);
-      setAnalysisResult(null);
-      setIsProcessing(false);
-      setIsOcrProcessing(false);
-  }
+    useEffect(() => {
+        const root = window.document.documentElement;
+        if (darkMode) {
+            root.classList.add('dark');
+        } else {
+            root.classList.remove('dark');
+        }
+        root.style.setProperty('--primary', currentTheme.primary);
+        root.style.setProperty('--secondary', currentTheme.secondary);
+        root.style.setProperty('--accent', currentTheme.accent);
+    }, [theme, darkMode, currentTheme]);
+    
+    const isReadyForProcessing = useMemo(() => {
+        const d1 = doc1.content;
+        const d2 = doc2.content;
+        return d1.trim().length > 0 && d2.trim().length > 0 && !!ai;
+    }, [doc1, doc2, ai]);
 
-  const processPdf = async (file: File) => {
-    setIsOcrProcessing(true);
-    try {
-      if (!apiKey) throw new Error("API Key required for PDF processing");
-      
-      const fileReader = new FileReader();
-      fileReader.onload = async (e) => {
-        const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
-        const pdf = await pdfjsLib.getDocument(typedarray).promise;
-        // Process all pages
-        const pageTexts = [];
-        // Limit to 3 pages for demo speed, remove limit for prod
-        const maxPages = Math.min(pdf.numPages, 5); 
+
+    const handleAgentExecution = useCallback(async () => {
+        if (!isReadyForProcessing) {
+            setError(t.error.docsAndApiKey);
+            return;
+        }
+        if (!ai) {
+             setError("GoogleGenAI client could not be initialized. Please provide a valid API Key.");
+             return;
+        }
+
+        setIsLoading(true);
+        setError(null);
+        setCurrentStep(1);
+        setAgentOutputs(Array(agentCount).fill(''));
+        setCurrentlyExecutingAgentIndex(0);
+
+        const doc1Text = doc1.content;
+        const doc2Text = doc2.content;
         
-        for (let i = 1; i <= maxPages; i++) {
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 1.5 }); 
-          const canvas = window.document.createElement('canvas');
-          const context = canvas.getContext('2d');
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-          await page.render({ canvasContext: context!, viewport }).promise;
-          const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          const base64Data = imageDataUrl.split(',')[1];
-          
-          try {
-              const ocrText = await performOcr(apiKey, base64Data);
-              pageTexts.push(`--- Page ${i} ---\n${ocrText}`);
-          } catch(err) {
-              console.error("OCR Error on page " + i, err);
-              pageTexts.push(`--- Page ${i} (OCR Failed) ---`);
-          }
+        let currentInput = `Document A:\n---\n${doc1Text}\n---\n\nDocument B:\n---\n${doc2Text}\n---`;
+        let finalAgentOutput = '';
+
+        try {
+            for (let i = 0; i < agentCount; i++) {
+                setCurrentlyExecutingAgentIndex(i);
+                const agent = agents[i];
+                
+                const fullPrompt = `${agent.system_prompt}\n\nTask:\n${currentInput}`;
+                const config: any = {
+                    temperature: agent.temperature,
+                    maxOutputTokens: agent.max_tokens,
+                };
+                if (agent.model.includes('gemini-2.5-flash')) {
+                    config.thinkingConfig = { thinkingBudget: Math.max(1, Math.floor(agent.max_tokens / 4)) };
+                }
+                
+                const response = await ai.models.generateContent({
+                    model: agent.model,
+                    contents: fullPrompt,
+                    config,
+                });
+                const outputText = response.text;
+                
+                setAgentOutputs(currentOutputs => {
+                    const newOutputs = [...currentOutputs];
+                    newOutputs[i] = outputText;
+                    return newOutputs;
+                });
+                
+                currentInput += `\n\n--- Analysis from ${agent.name} ---\n${outputText}`;
+                finalAgentOutput = outputText;
+            }
+            
+            setCurrentlyExecutingAgentIndex(null);
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            if(finalAgentOutput) {
+                 const { summary, keywords } = await generateSummaryAndKeywords(ai, finalAgentOutput, doc1Text, doc2Text);
+                 setSummary(summary);
+                 setKeywords(keywords);
+                 
+                 if (keywords.length > 0) {
+                    const graph = await generateKeywordGraph(ai, keywords, summary);
+                    setGraphData(graph);
+                 }
+
+                 const questions = await generateFollowUpQuestions(ai, summary);
+                 setFollowUpQuestions(questions);
+                 setCurrentStep(2);
+            }
+        } catch (e: any) {
+            setError(`${t.error.agentExecution}: ${e.message}`);
+            console.error(e);
+        } finally {
+            setIsLoading(false);
         }
-        setDocumentFile(prev => ({ ...prev, content: pageTexts.join('\n\n') }));
-      };
-      fileReader.readAsArrayBuffer(file);
-    } catch (error: any) {
-      console.error("Failed to process PDF", error);
-      setDocumentFile(prev => ({ ...prev, content: `Error processing PDF: ${error.message}` }));
-      if(!apiKey) alert("Please enter API Key in settings");
-    } finally {
-      setIsOcrProcessing(false);
-    }
-  };
+    }, [ai, agents, agentCount, doc1, doc2, isReadyForProcessing, t]);
 
-  const addAgent = (template: Omit<Agent, 'id' | 'status' | 'output' | 'error' | 'outputJson'>) => {
-    const newAgent: Agent = {
-      ...template,
-      id: `agent-${Date.now()}`,
-      status: AgentStatus.Pending,
-      output: null,
-      error: null,
-      outputJson: null,
+
+    const handleUpdateAgent = (index: number, updatedAgent: Agent) => {
+        const newAgents = [...agents];
+        newAgents[index] = updatedAgent;
+        setAgents(newAgents);
     };
-    setAgents(prev => [...prev, newAgent]);
-  };
 
-  const handlePromptChange = (id: string, prompt: string) => {
-    setAgents(prev => prev.map(agent => (agent.id === id ? { ...agent, prompt } : agent)));
-  };
-
-  const handleDeleteAgent = (id: string) => {
-    setAgents(prev => prev.filter(agent => agent.id !== id));
-  };
-  
-  const parseJsonOutput = (text: string): any | null => {
-      try {
-        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```|({[\s\S]*})|(\[[\s\S]*\])/);
-        if (jsonMatch) {
-            const jsonString = jsonMatch[1] || jsonMatch[2] || jsonMatch[3];
-            return JSON.parse(jsonString);
-        }
-        return JSON.parse(text);
-      } catch (e) {
-        return null;
-      }
-  };
-  
-  const analyzeResults = (currentAgents: Agent[]) => {
-      const sentimentAgent = currentAgents.find(a => a.name.includes('Sentiment') && a.status === AgentStatus.Success);
-      const entityAgent = currentAgents.find(a => a.name.includes('Entity') && a.status === AgentStatus.Success);
-      
-      let newAnalysis: AnalysisResult = { sentiment: null, entities: null };
-
-      if(sentimentAgent?.outputJson?.sentiment) {
-          const s = sentimentAgent.outputJson.sentiment.toLowerCase();
-          if (s === 'positive') newAnalysis.sentiment = { positive: 1, negative: 0, neutral: 0 };
-          else if (s === 'negative') newAnalysis.sentiment = { positive: 0, negative: 1, neutral: 0 };
-          else newAnalysis.sentiment = { positive: 0, negative: 0, neutral: 1 };
-      }
-
-      if(entityAgent?.outputJson && Array.isArray(entityAgent.outputJson)) {
-        newAnalysis.entities = entityAgent.outputJson.filter((e: any) => e.name && e.type);
-      }
-      
-      if(newAnalysis.sentiment || (newAnalysis.entities && newAnalysis.entities.length > 0)) {
-          setAnalysisResult(newAnalysis);
-          // Only auto-switch if we actually got results
-          setActiveTab('dashboard');
-      }
-  };
-
-  const runWorkflow = useCallback(async () => {
-    if (!documentFile.content || documentFile.type === DocumentType.EMPTY) {
-      alert("Please load a document first.");
-      return;
-    }
-    if (!apiKey) {
-        alert("Please enter your Gemini API Key in the settings menu (gear icon).");
-        return;
-    }
-    
-    setIsProcessing(true);
-    setAnalysisResult(null);
-
-    let currentAgents = agents.map(a => ({...a, status: AgentStatus.Pending, output: null, error: null, outputJson: null}));
-    setAgents(currentAgents);
-
-    for (const agent of agents) {
-        currentAgents = currentAgents.map(a => (a.id === agent.id ? { ...a, status: AgentStatus.Running } : a));
-        setAgents(currentAgents);
-      try {
-        const output = await processAgentPrompt(apiKey, agent.prompt, documentFile.content);
-        const outputJson = parseJsonOutput(output);
-        currentAgents = currentAgents.map(a => (a.id === agent.id ? { ...a, status: AgentStatus.Success, output, outputJson } : a));
-        setAgents(currentAgents);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-        currentAgents = currentAgents.map(a => (a.id === agent.id ? { ...a, status: AgentStatus.Error, error: errorMessage } : a));
-        setAgents(currentAgents);
-        break; // Stop chain on error
-      }
-    }
-    
-    analyzeResults(currentAgents);
-    setIsProcessing(false);
-  }, [agents, documentFile.content, documentFile.type, apiKey]);
-
-  const NotesEditor = () => {
-    const [notes, setNotes] = useLocalStorage('reviewNotes', `# ${T.yourNotes}\n\n`);
-    const [textToColor, setTextToColor] = useState('');
-    const [color, setColor] = useState('#E91E63');
-
-    const applyColor = () => {
-        if (!textToColor.trim()) return;
-        const coloredText = `<span style="color: ${color}; font-weight: 600;">${textToColor}</span>`;
-        setNotes(notes.replace(textToColor, coloredText));
-        setTextToColor('');
+    const resetState = () => {
+        setDoc1({ id: 1, content: '', file: null, type: 'text' });
+        setDoc2({ id: 2, content: '', file: null, type: 'text' });
+        setAgents(DEFAULT_AGENTS);
+        setAgentCount(3);
+        setAgentOutputs(Array(DEFAULT_AGENTS.length).fill(''));
+        setSummary('');
+        setKeywords([]);
+        setGraphData(null);
+        setFollowUpQuestions([]);
+        setCurrentStep(0);
+        setError(null);
+        // Do not reset API key or model selection
     };
+
+    const STEPS = [t.steps.input, t.steps.agents, t.steps.summary];
 
     return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md space-y-6">
-            <div>
-                <h3 className="text-lg font-semibold mb-2">{T.yourNotes}</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full h-80 p-3 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-md focus:ring-2 focus:ring-primary transition" />
-                    <div>
-                        <h4 className="font-semibold mb-2">{T.notesPreview}</h4>
-                        <div className="prose prose-sm dark:prose-invert max-w-none h-80 p-3 overflow-y-auto bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-md" dangerouslySetInnerHTML={{ __html: notes.replace(/\n/g, '<br/>') }} />
+        <div className={`min-h-screen font-sans transition-colors duration-500 ${darkMode ? 'dark bg-gray-900 text-text-dark' : 'bg-gray-50 text-text-light'}`}>
+            <Sidebar 
+                theme={theme}
+                setTheme={setTheme}
+                darkMode={darkMode}
+                setDarkMode={setDarkMode}
+                language={language}
+                setLanguage={setLanguage}
+                t={t}
+                currentTheme={currentTheme}
+            />
+
+            <main className="pl-0 md:pl-64 transition-all duration-300">
+                <div className="p-4 sm:p-6 md:p-8 max-w-7xl mx-auto">
+                    <header className="mb-8">
+                        <h1 className="text-3xl sm:text-4xl font-bold" style={{ color: currentTheme.accent }}>
+                           {currentTheme.icon} {t.title}
+                        </h1>
+                        <p className="text-base sm:text-lg mt-2 opacity-80">{t.subtitle}</p>
+                    </header>
+                    
+                    {error && currentStep !== 1 && (
+                        <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-r-lg" role="alert">
+                            <p className="font-bold">{t.error.title}</p>
+                            <p>{error}</p>
+                        </div>
+                    )}
+                    
+                     {/* --- Settings Section for API Key and Model --- */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 p-4 rounded-lg bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm shadow-md">
+                        <div className="flex flex-col">
+                           <label htmlFor="apiKey" className="mb-2 font-semibold text-sm flex items-center"><KeyRound className="mr-2 h-4 w-4"/>{t.settings.apiKey}</label>
+                            <input
+                                id="apiKey"
+                                type="password"
+                                value={apiKey}
+                                onChange={(e) => setApiKey(e.target.value)}
+                                placeholder={t.settings.apiKeyPlaceholder}
+                                className="p-2 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 focus:ring-2 focus:ring-[var(--accent)]"
+                            />
+                        </div>
+                         <div className="flex flex-col">
+                           <label htmlFor="model" className="mb-2 font-semibold text-sm flex items-center"><WandSparkles className="mr-2 h-4 w-4"/>{t.settings.model}</label>
+                            <select
+                                id="model"
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                className="p-2 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 focus:ring-2 focus:ring-[var(--accent)]"
+                            >
+                                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                            </select>
+                        </div>
                     </div>
-                </div>
-            </div>
-            <div>
-                <h3 className="text-lg font-semibold mb-2">{T.textToColor}</h3>
-                <div className="flex items-center gap-2 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-                    <input type="text" value={textToColor} onChange={e => setTextToColor(e.target.value)} placeholder={T.textToColorPlaceholder} className="flex-grow p-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 rounded-md focus:ring-2 focus:ring-primary transition" />
-                    <input type="color" value={color} onChange={e => setColor(e.target.value)} className="w-10 h-10 p-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 rounded-md cursor-pointer" />
-                    <button onClick={applyColor} className="px-4 py-2 bg-primary text-white rounded-lg shadow hover:opacity-90 transition-opacity">{T.applyColor}</button>
-                </div>
-            </div>
-        </div>
-    );
-  };
-  
-  const TabButton = ({ tabName, label }: { tabName: string, label: string }) => (
-    <button onClick={() => setActiveTab(tabName)} className={`px-4 py-2 text-sm font-semibold rounded-md transition-all duration-200 ${activeTab === tabName ? 'bg-primary text-white shadow' : 'text-gray-600 dark:text-gray-300 hover:bg-primary/10'}`}>
-        {label}
-    </button>
-  );
 
-  return (
-    <div style={{'--primary': activeTheme.colors.primary} as React.CSSProperties} className="font-sans text-gray-800 dark:text-gray-200 min-h-screen bg-gray-100 dark:bg-gray-900 transition-colors duration-300">
-        {/* Header */}
-        <header className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm border-b border-gray-200 dark:border-gray-700 p-4 shadow-sm sticky top-0 z-10">
-            <div className="max-w-screen-xl mx-auto flex justify-between items-center">
-                <div className='flex items-center gap-3'>
-                    <DocumentIcon className="w-8 h-8 text-primary" />
-                    <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 hidden sm:block" style={{fontFamily: "'Poppins', sans-serif"}}>{T.title}</h1>
-                </div>
-                <div className='flex items-center gap-2 md:gap-4'>
-                    <div className="relative group">
-                        <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" title="Settings">
-                            <SettingsIcon className="w-5 h-5 text-gray-600 dark:text-gray-300"/>
-                        </button>
-                        <div className="absolute top-full right-0 mt-2 w-72 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 border border-gray-200 dark:border-gray-700 opacity-0 group-hover:opacity-100 invisible group-hover:visible transition-all duration-200 transform scale-95 group-hover:scale-100 z-50">
-                           <h3 className="font-semibold mb-3 text-sm flex items-center gap-2"><SettingsIcon className="w-4 h-4"/> {T.settings}</h3>
-                           
-                           <div className="space-y-4">
-                                {/* API Key Input */}
-                                <div className="space-y-1">
-                                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block">Gemini API Key</label>
-                                   <div className="flex items-center gap-2">
-                                        <KeyIcon className="w-4 h-4 text-primary" />
-                                        <input 
-                                            type="password" 
-                                            value={apiKey} 
-                                            onChange={e => setApiKey(e.target.value)} 
-                                            placeholder="Enter Key..." 
-                                            className="flex-grow text-xs bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md p-2 focus:ring-1 focus:ring-primary"
-                                        />
-                                   </div>
-                                </div>
 
-                                <hr className="border-gray-200 dark:border-gray-700" />
-
-                                <label className="flex items-center gap-2 text-sm">
-                                    <PaletteIcon className="w-5 h-5 text-primary"/>
-                                    <span className="flex-grow">{T.style}</span>
-                                    <select value={themeIndex} onChange={e => setThemeIndex(Number(e.target.value))} className="text-xs bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md p-1">
-                                        {FLOWER_THEMES.map((theme, i) => <option key={i} value={i}>{theme.name}</option>)}
-                                    </select>
-                                </label>
-                                <label className="flex items-center gap-2 text-sm">
-                                    <LanguageIcon className="w-5 h-5 text-primary"/>
-                                    <span className="flex-grow">{T.language}</span>
-                                    <select value={lang} onChange={e => setLang(e.target.value as 'en' | 'zh-TW')} className="text-xs bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md p-1">
-                                        <option value="en">English</option>
-                                        <option value="zh-TW">繁體中文</option>
-                                    </select>
-                                </label>
-                                <div className="flex items-center justify-between text-sm">
-                                    <span className="flex items-center gap-2"><SunIcon className="w-5 h-5 text-primary"/>{T.mode}</span>
-                                    <div className="flex items-center p-0.5 bg-gray-200 dark:bg-gray-700 rounded-full">
-                                        <button onClick={() => setIsDarkMode(false)} className={`p-1 rounded-full ${!isDarkMode ? 'bg-white shadow' : ''}`}><SunIcon className={`w-4 h-4 ${!isDarkMode ? 'text-yellow-500' : 'text-gray-400'}`}/></button>
-                                        <button onClick={() => setIsDarkMode(true)} className={`p-1 rounded-full ${isDarkMode ? 'bg-gray-800 shadow' : ''}`}><MoonIcon className={`w-4 h-4 ${isDarkMode ? 'text-indigo-400' : 'text-gray-400'}`}/></button>
+                     <div className="w-full mb-8">
+                        <div className="flex justify-between items-center">
+                            {STEPS.map((step, index) => (
+                                <React.Fragment key={step}>
+                                    <div className="flex items-center">
+                                        <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-all duration-300 ${index <= currentStep ? 'bg-[var(--accent)] text-white' : 'bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}>
+                                            {index === 0 && <FileText size={20}/>}
+                                            {index === 1 && <Bot size={20}/>}
+                                            {index === 2 && <BrainCircuit size={20}/>}
+                                        </div>
+                                        <span className={`ml-2 text-xs sm:text-sm font-medium ${index <= currentStep ? 'text-[var(--accent)]' : 'text-gray-500'}`}>{step}</span>
                                     </div>
-                                </div>
-                           </div>
+                                    {index < STEPS.length - 1 && (
+                                        <div className="flex-1 h-1 bg-gray-300 dark:bg-gray-700 mx-2 sm:mx-4 relative">
+                                            <div className="absolute top-0 left-0 h-1 bg-[var(--accent)] transition-all duration-500" style={{width: currentStep > index ? '100%' : '0%'}}></div>
+                                        </div>
+                                    )}
+                                </React.Fragment>
+                            ))}
                         </div>
                     </div>
-                </div>
-            </div>
-        </header>
 
-        {/* Main Content */}
-        <main className="max-w-screen-xl mx-auto p-4 md:p-6">
-            <div className="flex justify-center mb-6 bg-white/50 dark:bg-gray-800/50 p-1.5 rounded-lg shadow-sm w-fit mx-auto">
-                <TabButton tabName="workflow" label={T.workflow} />
-                <TabButton tabName="dashboard" label={T.dashboard} />
-                <TabButton tabName="notes" label={T.notes} />
-            </div>
 
-            {activeTab === 'workflow' && (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-1 flex flex-col gap-6">
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md">
-                            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><FileTextIcon /> {T.documentControl}</h2>
-                            <div className="relative border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center hover:border-primary transition-colors">
-                                <UploadIcon className="mx-auto h-12 w-12 text-gray-400" />
-                                <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-gray-100">{T.uploadDocument}</h3>
-                                <p className="mt-1 text-xs text-gray-500">{T.uploadHint}</p>
-                                <input type="file" onChange={handleFileChange} accept=".pdf,.txt" className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    {currentStep === 0 && (
+                         <div className="animate-fadeIn">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
+                                {/* Pass selectedModel to DocumentInput for OCR */}
+                                <DocumentInput t={t} docState={doc1} setDocState={setDoc1} theme={currentTheme} ai={ai} selectedModel={selectedModel} />
+                                <DocumentInput t={t} docState={doc2} setDocState={setDoc2} theme={currentTheme} ai={ai} selectedModel={selectedModel} />
                             </div>
-                            <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-                                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{documentFile.name}</p>
-                                <p className="text-xs text-gray-500 dark:text-gray-400">
-                                    {isOcrProcessing ? "Processing OCR (this may take a moment)..." : `${documentFile.content.substring(0, 100)}${documentFile.content.length > 100 ? '...' : ''}`}
-                                </p>
-                            </div>
-                            {!apiKey && (
-                                <div className="mt-2 text-xs text-red-500 bg-red-50 p-2 rounded border border-red-200">
-                                    ⚠️ API Key missing. Please add it in Settings (Top Right).
-                                </div>
-                            )}
-                        </div>
-                        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md">
-                            <h2 className="text-lg font-semibold mb-4">{T.addAgent}</h2>
-                            <div className="grid grid-cols-2 gap-2">
-                                {DEFAULT_AGENTS.map(template => (
-                                    <button key={template.name} onClick={() => addAgent(template)} className="flex items-center gap-2 p-2 bg-gray-100 dark:bg-gray-700 hover:bg-primary/10 rounded-md text-sm transition-colors text-left">
-                                    <PlusIcon className="w-4 h-4 text-primary flex-shrink-0"/>
-                                    {template.name}
-                                    </button>
-                                ))}
+                             <AgentEditor t={t} agents={agents} onUpdateAgent={handleUpdateAgent} agentCount={agentCount} setAgentCount={setAgentCount} theme={currentTheme}/>
+
+                            <div className="mt-8 flex justify-end">
+                                <button
+                                    onClick={handleAgentExecution}
+                                    disabled={!isReadyForProcessing || isLoading}
+                                    className="px-8 py-3 bg-[var(--accent)] text-white font-bold rounded-lg shadow-lg hover:opacity-80 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300 flex items-center group"
+                                >
+                                    {isLoading ? t.buttons.processing : t.buttons.startProcessing}
+                                    {!isLoading && <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />}
+                                </button>
                             </div>
                         </div>
-                    </div>
-                    <div className="lg:col-span-2 bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-lg font-semibold">{T.agentWorkflow}</h2>
-                            <button onClick={runWorkflow} disabled={isProcessing || agents.length === 0 || documentFile.type === DocumentType.EMPTY} className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg shadow hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors">
-                                <PlayIcon/>
-                                {isProcessing ? T.running : T.runWorkflow}
-                            </button>
-                        </div>
-                        <div className="space-y-4">
-                            {agents.length > 0 ? (
-                                agents.map((agent, index) => <AgentStep key={agent.id} agent={agent} index={index} onPromptChange={handlePromptChange} onDelete={handleDeleteAgent}/>)
-                            ) : (
-                                <div className="text-center py-10 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-lg">
-                                    <p className="text-gray-500">{T.addAgentToStart}</p>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
+                    )}
+                    
+                    {currentStep === 1 && (
+                        <AgentExecutionView
+                            t={t}
+                            agents={agents}
+                            agentCount={agentCount}
+                            agentOutputs={agentOutputs}
+                            currentlyExecutingAgentIndex={currentlyExecutingAgentIndex}
+                            theme={currentTheme}
+                            error={error}
+                        />
+                    )}
 
-            {activeTab === 'dashboard' && (
-                <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md">
-                    <h2 className="text-lg font-semibold mb-4">{T.resultsDashboard}</h2>
-                    {analysisResult ? (
-                        <div className="grid md:grid-cols-2 gap-6">
-                            {analysisResult.entities && analysisResult.entities.length > 0 && (
-                                <div className="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg">
-                                    <h3 className="font-semibold mb-2">{T.extractedEntities}</h3>
-                                    <div className="h-80 overflow-y-auto">
-                                        <ResponsiveContainer width="100%" height="100%">
-                                            <BarChart data={Object.entries(analysisResult.entities.reduce((acc: any, curr: any) => { acc[curr.type] = (acc[curr.type] || 0) + 1; return acc; }, {} as Record<string, number>)).map(([name, value]) => ({ name, count: value }))} layout="vertical" margin={{ top: 5, right: 20, left: 40, bottom: 5 }}>
-                                                <XAxis type="number" hide />
-                                                <YAxis type="category" dataKey="name" width={80} tick={{fontSize: 12, fill: isDarkMode ? '#A0AEC0' : '#4A5568'}}/>
-                                                <Tooltip cursor={{fill: 'rgba(128, 128, 128, 0.1)'}}/>
-                                                <Bar dataKey="count" fill="var(--primary)" barSize={20} />
-                                            </BarChart>
-                                        </ResponsiveContainer>
-                                    </div>
+                    {currentStep === 2 && !isLoading && (
+                        <div className="animate-fadeIn space-y-8">
+                            <SummaryView
+                                t={t}
+                                summary={summary}
+                                keywords={keywords}
+                                graphData={graphData}
+                                theme={currentTheme}
+                            />
+
+                            <div className="grid grid-cols-1 gap-8">
+                                <div className="p-6 rounded-lg shadow-lg bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
+                                    <h3 className="text-xl font-bold mb-4 text-[var(--accent)] flex items-center"><BookOpen className="mr-2"/>{t.summary.followUp}</h3>
+                                    <ul className="space-y-2 list-disc list-inside">
+                                    {followUpQuestions.map((q, i) => <li key={i}>{q}</li>)}
+                                    </ul>
                                 </div>
-                            )}
-                            {analysisResult.sentiment && (
-                                <div className="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg flex flex-col items-center">
-                                    <h3 className="font-semibold mb-2">{T.sentimentAnalysis}</h3>
-                                    <div className="w-full h-80">
-                                        <ResponsiveContainer>
-                                            <PieChart>
-                                                <Pie data={[{ name: 'Positive', value: analysisResult.sentiment.positive }, { name: 'Negative', value: analysisResult.sentiment.negative }, { name: 'Neutral', value: analysisResult.sentiment.neutral }]} cx="50%" cy="50%" outerRadius={100} dataKey="value" labelLine={false} label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}>
-                                                    <Cell key="positive" fill="#22c55e" />
-                                                    <Cell key="negative" fill="#ef4444" />
-                                                    <Cell key="neutral" fill="#6b7280" />
-                                                </Pie>
-                                                <Tooltip />
-                                                <Legend />
-                                            </PieChart>
-                                        </ResponsiveContainer>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    ) : (
-                        <div className="text-center py-10 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-lg">
-                            <p className="text-gray-500">Run a workflow with 'Sentiment' or 'Entity' agents to see results here.</p>
+                            </div>
+                            
+                            <div className="mt-8 flex justify-end">
+                                <button
+                                    onClick={resetState}
+                                    className="px-8 py-3 bg-gray-500 text-white font-bold rounded-lg shadow-lg hover:bg-gray-600 transition-colors"
+                                >
+                                    {t.buttons.startOver}
+                                </button>
+                            </div>
+
                         </div>
                     )}
                 </div>
-            )}
-
-            {activeTab === 'notes' && <NotesEditor />}
-
-        </main>
-    </div>
-  );
+            </main>
+        </div>
+    );
 };
 
 export default App;
