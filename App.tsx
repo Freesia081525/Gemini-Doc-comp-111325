@@ -1,15 +1,15 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-// Fix: Use process.env.API_KEY directly as per guidelines
 import { GoogleGenAI } from '@google/genai';
 import { FLOWER_THEMES, TRANSLATIONS, DEFAULT_AGENTS } from './constants';
-import { Language, Theme, ThemeKey, Agent, DocumentState } from './types';
+import { Language, Theme, ThemeKey, Agent, DocumentState, GraphData } from './types';
 import { Sidebar } from './components/Sidebar';
 import { DocumentInput } from './components/DocumentInput';
 import { AgentEditor } from './components/AgentEditor';
 import { SummaryView } from './components/SummaryView';
-import { generateSummaryAndKeywords, generateFollowUpQuestions, runAgentExecution } from './services/geminiService';
+import { generateSummaryAndKeywords, generateFollowUpQuestions, generateKeywordGraph } from './services/geminiService';
 import { BookOpen, Bot, BrainCircuit, ChevronRight, FileText } from 'lucide-react';
+import { AgentExecutionView } from './components/AgentExecutionView';
 
 const App: React.FC = () => {
     const [theme, setTheme] = useState<ThemeKey>('櫻花 Cherry Blossom');
@@ -24,14 +24,26 @@ const App: React.FC = () => {
     
     const [summary, setSummary] = useState('');
     const [keywords, setKeywords] = useState<string[]>([]);
+    const [graphData, setGraphData] = useState<GraphData | null>(null);
     const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([]);
 
     const [isLoading, setIsLoading] = useState(false);
     const [currentStep, setCurrentStep] = useState(0);
+    const [currentlyExecutingAgentIndex, setCurrentlyExecutingAgentIndex] = useState<number | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     const t = TRANSLATIONS[language];
     const currentTheme: Theme = FLOWER_THEMES[theme];
+
+    const ai = useMemo(() => {
+        const apiKey = (typeof process !== 'undefined' && process.env) ? process.env.API_KEY : undefined;
+        if (!apiKey) {
+            console.error("API_KEY is not set in environment variables.");
+            return null;
+        }
+        return new GoogleGenAI({ apiKey });
+    }, []);
+
 
     useEffect(() => {
         const root = window.document.documentElement;
@@ -45,12 +57,11 @@ const App: React.FC = () => {
         root.style.setProperty('--accent', currentTheme.accent);
     }, [theme, darkMode, currentTheme]);
     
-    // Fix: Removed API key from readiness check as it's now handled via environment variables.
     const isReadyForProcessing = useMemo(() => {
         const d1 = doc1.content;
         const d2 = doc2.content;
-        return d1.trim().length > 0 && d2.trim().length > 0;
-    }, [doc1, doc2]);
+        return d1.trim().length > 0 && d2.trim().length > 0 && !!ai;
+    }, [doc1, doc2, ai]);
 
 
     const handleAgentExecution = useCallback(async () => {
@@ -58,32 +69,70 @@ const App: React.FC = () => {
             setError(t.error.docsAndApiKey);
             return;
         }
+        if (!ai) {
+             setError("GoogleGenAI client could not be initialized. Check API Key.");
+             return;
+        }
+
         setIsLoading(true);
         setError(null);
-        setCurrentStep(1); // Move to agent processing view
+        setCurrentStep(1);
+        setAgentOutputs(Array(agentCount).fill(''));
+        setCurrentlyExecutingAgentIndex(0);
 
-        // Fix: Initialize GoogleGenAI with process.env.API_KEY as per guidelines. Added non-null assertion assuming it's set.
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
         const doc1Text = doc1.content;
         const doc2Text = doc2.content;
         
+        let currentInput = `Document A:\n---\n${doc1Text}\n---\n\nDocument B:\n---\n${doc2Text}\n---`;
+        let finalAgentOutput = '';
+
         try {
-            const outputs = await runAgentExecution(ai, agents.slice(0, agentCount), doc1Text, doc2Text);
-            setAgentOutputs(currentOutputs => {
-                const newOutputs = [...currentOutputs];
-                outputs.forEach((output, i) => newOutputs[i] = output);
-                return newOutputs;
-            });
+            for (let i = 0; i < agentCount; i++) {
+                setCurrentlyExecutingAgentIndex(i);
+                const agent = agents[i];
+                
+                const fullPrompt = `${agent.system_prompt}\n\nTask:\n${currentInput}`;
+                const config: any = {
+                    temperature: agent.temperature,
+                    maxOutputTokens: agent.max_tokens,
+                };
+                if (agent.model.includes('gemini-2.5-flash')) {
+                    config.thinkingConfig = { thinkingBudget: Math.max(1, Math.floor(agent.max_tokens / 4)) };
+                }
+                
+                const response = await ai.models.generateContent({
+                    model: agent.model,
+                    contents: fullPrompt,
+                    config,
+                });
+                const outputText = response.text;
+                
+                setAgentOutputs(currentOutputs => {
+                    const newOutputs = [...currentOutputs];
+                    newOutputs[i] = outputText;
+                    return newOutputs;
+                });
+                
+                currentInput += `\n\n--- Analysis from ${agent.name} ---\n${outputText}`;
+                finalAgentOutput = outputText;
+            }
             
-            const lastOutput = outputs[outputs.length - 1];
-            if(lastOutput) {
-                 const { summary, keywords } = await generateSummaryAndKeywords(ai, lastOutput, doc1Text, doc2Text);
+            setCurrentlyExecutingAgentIndex(null);
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            if(finalAgentOutput) {
+                 const { summary, keywords } = await generateSummaryAndKeywords(ai, finalAgentOutput, doc1Text, doc2Text);
                  setSummary(summary);
                  setKeywords(keywords);
+                 
+                 if (keywords.length > 0) {
+                    const graph = await generateKeywordGraph(ai, keywords, summary);
+                    setGraphData(graph);
+                 }
 
                  const questions = await generateFollowUpQuestions(ai, summary);
                  setFollowUpQuestions(questions);
-                 setCurrentStep(2); // Move to summary view
+                 setCurrentStep(2);
             }
         } catch (e: any) {
             setError(`${t.error.agentExecution}: ${e.message}`);
@@ -91,7 +140,7 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [agents, agentCount, doc1, doc2, isReadyForProcessing, t.error.docsAndApiKey, t.error.agentExecution]);
+    }, [ai, agents, agentCount, doc1, doc2, isReadyForProcessing, t]);
 
 
     const handleUpdateAgent = (index: number, updatedAgent: Agent) => {
@@ -108,6 +157,7 @@ const App: React.FC = () => {
         setAgentOutputs(Array(DEFAULT_AGENTS.length).fill(''));
         setSummary('');
         setKeywords([]);
+        setGraphData(null);
         setFollowUpQuestions([]);
         setCurrentStep(0);
         setError(null);
@@ -137,7 +187,7 @@ const App: React.FC = () => {
                         <p className="text-base sm:text-lg mt-2 opacity-80">{t.subtitle}</p>
                     </header>
                     
-                    {error && (
+                    {error && currentStep !== 1 && (
                         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-r-lg" role="alert">
                             <p className="font-bold">{t.error.title}</p>
                             <p>{error}</p>
@@ -170,8 +220,8 @@ const App: React.FC = () => {
                     {currentStep === 0 && (
                          <div className="animate-fadeIn">
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
-                                <DocumentInput t={t} docState={doc1} setDocState={setDoc1} theme={currentTheme}/>
-                                <DocumentInput t={t} docState={doc2} setDocState={setDoc2} theme={currentTheme}/>
+                                <DocumentInput t={t} docState={doc1} setDocState={setDoc1} theme={currentTheme} ai={ai}/>
+                                <DocumentInput t={t} docState={doc2} setDocState={setDoc2} theme={currentTheme} ai={ai}/>
                             </div>
                              <AgentEditor t={t} agents={agents} onUpdateAgent={handleUpdateAgent} agentCount={agentCount} setAgentCount={setAgentCount} theme={currentTheme}/>
 
@@ -188,17 +238,16 @@ const App: React.FC = () => {
                         </div>
                     )}
                     
-                    {currentStep === 1 && isLoading && (
-                        <div className="animate-fadeIn text-center p-8 rounded-lg shadow-lg bg-white/50 dark:bg-gray-800/50 backdrop-blur-sm">
-                            <div className="flex justify-center items-center mb-4">
-                               <Bot size={48} className="text-[var(--accent)] animate-bounce" />
-                            </div>
-                            <h2 className="text-2xl font-bold text-[var(--accent)]">{t.loading.agents}</h2>
-                            <p className="mt-2">{t.loading.agentsDesc}</p>
-                            <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-4">
-                               <div className="bg-[var(--accent)] h-2.5 rounded-full animate-pulse" style={{width: '100%'}}></div>
-                            </div>
-                        </div>
+                    {currentStep === 1 && (
+                        <AgentExecutionView
+                            t={t}
+                            agents={agents}
+                            agentCount={agentCount}
+                            agentOutputs={agentOutputs}
+                            currentlyExecutingAgentIndex={currentlyExecutingAgentIndex}
+                            theme={currentTheme}
+                            error={error}
+                        />
                     )}
 
                     {currentStep === 2 && !isLoading && (
@@ -207,6 +256,7 @@ const App: React.FC = () => {
                                 t={t}
                                 summary={summary}
                                 keywords={keywords}
+                                graphData={graphData}
                                 theme={currentTheme}
                             />
 

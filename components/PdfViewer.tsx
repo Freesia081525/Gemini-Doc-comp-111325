@@ -1,7 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { Wand, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
@@ -42,6 +40,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ file, pagePattern, onOcrRe
     const [numPages, setNumPages] = useState<number | null>(null);
     const [currentPage, setCurrentPage] = useState(1);
 
+    // Fix: Convert the File object to a URL to ensure reliable loading by react-pdf.
+    // useMemo prevents re-creating the URL on every render.
+    const fileUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+
     const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
         setNumPages(numPages);
         setCurrentPage(1);
@@ -70,8 +72,8 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ file, pagePattern, onOcrRe
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
 
-                // FIX: Add canvas to render parameters to satisfy TypeScript types for page.render.
-                // The RenderParameters type seems to require the 'canvas' property.
+                // Fix: The type definitions for `page.render` in this project environment require the `canvas` property.
+                // Although not standard in all pdf.js versions, adding it resolves the compile error.
                 await page.render({ canvasContext: context, viewport, canvas }).promise;
                 images.push({ pageNumber: pageNum, data: canvas.toDataURL('image/png') });
             }
@@ -87,13 +89,15 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ file, pagePattern, onOcrRe
     return (
         <div className="space-y-4">
             <div className="relative w-full border rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-900">
-                <Document file={file} onLoadSuccess={onDocumentLoadSuccess}>
-                    <Page 
-                      key={`page_${currentPage}`}
-                      pageNumber={currentPage}
-                      renderTextLayer={false}
-                    />
-                </Document>
+                {fileUrl && (
+                    <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess}>
+                        <Page 
+                          key={`page_${currentPage}`}
+                          pageNumber={currentPage}
+                          renderTextLayer={false}
+                        />
+                    </Document>
+                )}
             </div>
              {numPages && (
                  <div className="flex justify-between items-center">

@@ -12,14 +12,18 @@ export const WordGraph: React.FC<WordGraphProps> = ({ graphData, theme }) => {
     const svgRef = useRef<SVGSVGElement>(null);
 
     useEffect(() => {
-        if (!svgRef.current || !graphData || !graphData.nodes) return;
-
         const svg = d3.select(svgRef.current);
-        svg.selectAll("*").remove(); 
+        svg.selectAll("*").remove();
+
+        // Fix: Add robust checks for nodes and links before attempting to render the graph.
+        if (!svgRef.current || !graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.links) || graphData.nodes.length === 0) {
+            return;
+        }
 
         const width = svg.node()?.getBoundingClientRect().width || 500;
         const height = svg.node()?.getBoundingClientRect().height || 400;
 
+        // Create copies to avoid mutating props
         const nodes = graphData.nodes.map(d => ({...d}));
         const links = graphData.links.map(d => ({...d}));
         
