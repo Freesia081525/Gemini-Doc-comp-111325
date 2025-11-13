@@ -1,57 +1,48 @@
+import { GoogleGenAI } from '@google/genai';
 
-export type Language = 'en' | 'zh_TW';
+// Defines the specific models you allow
+export type LLMModel = 'gemini-2.5-flash' | 'gpt-4o-mini';
 
-export type ThemeKey = 
-    | "櫻花 Cherry Blossom" | "玫瑰 Rose" | "薰衣草 Lavender" | "鬱金香 Tulip" | "向日葵 Sunflower" 
-    | "蓮花 Lotus" | "蘭花 Orchid" | "茉莉 Jasmine" | "牡丹 Peony" | "百合 Lily"
-    | "紫羅蘭 Violet" | "梅花 Plum Blossom" | "茶花 Camellia" | "康乃馨 Carnation" | "海棠 Begonia"
-    | "桂花 Osmanthus" | "紫藤 Wisteria" | "水仙 Narcissus" | "杜鵑 Azalea" | "芙蓉 Hibiscus";
+// Re-defining other types for clarity
+export type Language = 'en' | 'zh';
 
 export interface Theme {
-    primary: string;
-    secondary: string;
-    accent: string;
-    icon: string;
+  name: string;
+  icon: string;
+  primary: string;
+  secondary: string;
+  accent: string;
 }
 
-export interface TranslationSet {
-    [key: string]: any;
-}
-
-// Fix: Removed non-Gemini model to align with project's available models.
-export type LLMModel = 'gemini-2.5-flash' | 'gemini-2.5-pro';
+export type ThemeKey = '櫻花 Cherry Blossom' | '薰衣草 Lavender' | '向日葵 Sunflower' | '海洋 Ocean' | '森林 Forest';
 
 export interface Agent {
-    name: string;
-    description: string;
-    system_prompt: string;
-    model: LLMModel;
-    temperature: number;
-    max_tokens: number;
+  name: string;
+  description: string;
+  system_prompt: string;
+  temperature: number;
+  max_tokens: number;
+  model: LLMModel; // This now uses our specific type
 }
-
-export type DocType = 'text' | 'pdf' | 'json' | 'md';
 
 export interface DocumentState {
-    id: number;
-    content: string;
-    file: File | null;
-    type: DocType;
-}
-
-// Fix: Added missing GraphData type for the WordGraph component.
-export interface GraphNode {
-    id: string;
-    [key: string]: any;
-}
-
-export interface GraphLink {
-    source: string;
-    target: string;
-    [key: string]: any;
+  id: number;
+  content: string;
+  file: File | null;
+  type: 'text' | 'pdf' | 'image';
 }
 
 export interface GraphData {
-    nodes: GraphNode[];
-    links: GraphLink[];
+    nodes: { id: string; group: number }[];
+    links: { source: string; target: string; value: number }[];
+}
+
+// Props type for DocumentInput component
+export interface DocumentInputProps {
+    t: any; // Replace with your actual TranslationSet type
+    docState: DocumentState;
+    setDocState: React.Dispatch<React.SetStateAction<DocumentState>>;
+    theme: Theme;
+    ai: GoogleGenAI | null;
+    selectedModel: LLMModel; // Add the missing prop here
 }
