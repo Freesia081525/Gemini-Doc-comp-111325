@@ -1,0 +1,5 @@
+{
+  "name": "Agentic AI Document Comparison System",
+  "description": "An advanced agentic AI system to upload, OCR, and compare two documents. Features customizable agent pipelines, comprehensive summaries with keyword analysis and visualization, and a highly themeable UI.",
+  "requestFramePermissions": []
+}
