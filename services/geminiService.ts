@@ -1,8 +1,8 @@
-
 import { GoogleGenAI, Type as GenAiType } from '@google/genai';
 import { Agent, GraphData } from '../types';
 
-export const runOcrOnImage = async (ai: GoogleGenAI, imageDataBase64: string): Promise<string> => {
+// The function now accepts a 'model' string to be more flexible.
+export const runOcrOnImage = async (ai: GoogleGenAI, imageDataBase64: string, model: string): Promise<string> => {
   const imagePart = {
     inlineData: {
       mimeType: 'image/png',
@@ -15,7 +15,8 @@ export const runOcrOnImage = async (ai: GoogleGenAI, imageDataBase64: string): P
   
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      // The model for OCR is now passed in as an argument.
+      model: model,
       contents: { parts: [imagePart, textPart] },
     });
     return response.text;
@@ -73,7 +74,6 @@ export const generateFollowUpQuestions = async (ai: GoogleGenAI, summary: string
 
         Summary:
         ${summary}`,
-        // Fix: Enforce JSON output with responseMimeType and responseSchema for more reliable parsing.
         config: {
             responseMimeType: 'application/json',
             responseSchema: {
@@ -84,13 +84,11 @@ export const generateFollowUpQuestions = async (ai: GoogleGenAI, summary: string
     });
 
     try {
-        // Fix: Trim the response and parse directly. The markdown/json cleaning is no longer needed with responseMimeType.
         const text = response.text.trim();
         const questions = JSON.parse(text);
         return Array.isArray(questions) ? questions : [];
     } catch (e) {
         console.error("Failed to parse follow-up questions:", e);
-        // Fallback to splitting by newline if JSON parsing fails
         return response.text.split('\n').map(q => q.replace(/^- /, '')).filter(Boolean);
     }
 };
@@ -156,17 +154,14 @@ export const generateKeywordGraph = async (ai: GoogleGenAI, keywords: string[], 
         const graphData = JSON.parse(jsonString);
         
         if (graphData && Array.isArray(graphData.nodes) && Array.isArray(graphData.links)) {
-            // Ensure all original keywords are present as nodes
             const nodeIds = new Set(graphData.nodes.map((n: {id: string}) => n.id));
             const missingNodes = keywords.filter(kw => !nodeIds.has(kw)).map(kw => ({ id: kw }));
             graphData.nodes.push(...missingNodes);
             return graphData;
         }
-         // Fallback if parsing fails or structure is wrong
         return { nodes: keywords.map(kw => ({ id: kw })), links: [] };
     } catch (e) {
         console.error("Failed to parse keyword graph data:", e);
-        // Fallback if API call fails
         return { nodes: keywords.map(kw => ({ id: kw })), links: [] };
     }
 };
