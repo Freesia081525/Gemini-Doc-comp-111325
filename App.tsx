@@ -12,7 +12,7 @@ declare const pdfjsLib: any;
 
 // --- Internal Services (Replaces external file to prevents import errors) ---
 
-const MODEL_NAME = "gemini-2.0-flash-exp"; // Or gemini-1.5-flash
+const MODEL_NAME = "gemini-2.5-flash"; // Or gemini-2.5-flash
 
 async function processAgentPrompt(apiKey: string, systemPrompt: string, userContent: string): Promise<string> {
     if (!apiKey) throw new Error("API Key is missing. Please add it in Settings.");
