@@ -4,82 +4,29 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agentic AI Document Comparison System</title>
-    
-    <!-- Tailwind CSS via CDN -->
+    <title>Agentic AI Document Intelligence Workbench</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Inline Tailwind CSS Configuration -->
-    <script>
-      tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            colors: {
-              primary: 'var(--primary)',
-              secondary: 'var(--secondary)',
-              accent: 'var(--accent)',
-              'bg-light': 'var(--bg-light)',
-              'bg-dark': 'var(--bg-dark)',
-              'text-light': '#111827',
-              'text-dark': '#e5e7eb',
-              'card-light': 'rgba(255, 255, 255, 0.85)',
-              'card-dark': 'rgba(30, 30, 30, 0.85)',
-              'border-light': 'var(--primary)',
-              'border-dark': 'var(--accent)',
-            },
-            keyframes: {
-              fadeIn: {
-                '0%': { opacity: '0' },
-                '100%': { opacity: '1' },
-              },
-            },
-            animation: {
-              fadeIn: 'fadeIn 0.5s ease-in-out',
-            },
-          },
-        },
-      }
-    </script>
-    
-    <!-- Google Fonts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Poppins:wght@400;500;700&display=swap" rel="stylesheet">
-    
-    <!-- Styles for react-pdf -->
-    <link rel="stylesheet" href="https://aistudiocdn.com/react-pdf@^10.2.0/dist/esm/Page/AnnotationLayer.css">
-    <link rel="stylesheet" href="https://aistudiocdn.com/react-pdf@^10.2.0/dist/esm/Page/TextLayer.css">
-    
-    <!-- Custom Body Font Style -->
-    <style>
-      body {
-        font-family: 'Poppins', 'Noto Sans TC', sans-serif;
-      }
-    </style>
-
-    <!-- Import Map for JavaScript Modules from CDN -->
-    <script type="importmap">
-      {
-        "imports": {
-          "react": "https://aistudiocdn.com/react@^19.2.0",
-          "react/": "https://aistudiocdn.com/react@^19.2.0/",
-          "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-          "lucide-react": "https://aistudiocdn.com/lucide-react@^0.553.0",
-          "@google/genai": "https://aistudiocdn.com/@google/genai@^1.29.1",
-          "react-markdown": "https://aistudiocdn.com/react-markdown@^10.1.0",
-          "remark-gfm": "https://aistudiocdn.com/remark-gfm@^4.0.1",
-          "react-pdf": "https://aistudiocdn.com/react-pdf@^10.2.0",
-          "react-pdf/": "https://aistudiocdn.com/react-pdf@^10.2.0/",
-          "d3": "https://aistudiocdn.com/d3@^7.9.0"
-        }
-      }
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+    <script>
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     </script>
-  </head>
-  <body>
-    <!-- The root element where the React app will be mounted -->
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.29.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "recharts": "https://aistudiocdn.com/recharts@^3.4.1"
+  }
+}
+</script>
+</head>
+  <body class="bg-gray-100 dark:bg-gray-900">
     <div id="root"></div>
-    <!-- The src should point to your main entry file in the src folder -->
-    <script type="module" src="/src/index.tsx"></script>
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>
