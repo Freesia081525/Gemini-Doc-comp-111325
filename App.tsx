@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { FLOWER_THEMES, TRANSLATIONS, DEFAULT_AGENTS } from './constants';
@@ -8,7 +7,7 @@ import { DocumentInput } from './components/DocumentInput';
 import { AgentEditor } from './components/AgentEditor';
 import { SummaryView } from './components/SummaryView';
 import { generateSummaryAndKeywords, generateFollowUpQuestions, generateKeywordGraph } from './services/geminiService';
-import { BookOpen, Bot, BrainCircuit, ChevronRight, FileText } from 'lucide-react';
+import { BookOpen, Bot, BrainCircuit, ChevronRight, FileText, KeyRound, WandSparkles } from 'lucide-react';
 import { AgentExecutionView } from './components/AgentExecutionView';
 
 const App: React.FC = () => {
@@ -16,6 +15,10 @@ const App: React.FC = () => {
     const [darkMode, setDarkMode] = useState<boolean>(false);
     const [language, setLanguage] = useState<Language>('en');
     
+    // New states for API key and model selection
+    const [apiKey, setApiKey] = useState<string>('');
+    const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
+
     const [doc1, setDoc1] = useState<DocumentState>({ id: 1, content: '', file: null, type: 'text' });
     const [doc2, setDoc2] = useState<DocumentState>({ id: 2, content: '', file: null, type: 'text' });
     const [agents, setAgents] = useState<Agent[]>(DEFAULT_AGENTS);
@@ -34,15 +37,30 @@ const App: React.FC = () => {
 
     const t = TRANSLATIONS[language];
     const currentTheme: Theme = FLOWER_THEMES[theme];
-
+    
+    // AI client initialization is now memoized based on the user-provided API key.
+    // It prioritizes the key from the input field and falls back to the environment variable.
     const ai = useMemo(() => {
-        const apiKey = (typeof process !== 'undefined' && process.env) ? process.env.API_KEY : undefined;
-        if (!apiKey) {
-            console.error("API_KEY is not set in environment variables.");
+        const effectiveApiKey = apiKey || (typeof process !== 'undefined' && process.env.API_KEY);
+        if (!effectiveApiKey) {
             return null;
         }
-        return new GoogleGenAI({ apiKey });
-    }, []);
+        try {
+             return new GoogleGenAI({ apiKey: effectiveApiKey });
+        } catch(e: any) {
+            console.error("Error initializing GoogleGenAI client:", e);
+            // Set an error for the user to see
+            setError(`Failed to initialize AI client. Please check the API key format. Details: ${e.message}`);
+            return null;
+        }
+    }, [apiKey]);
+
+    // This effect updates all agents to use the newly selected model.
+    useEffect(() => {
+        setAgents(prevAgents =>
+            prevAgents.map(agent => ({ ...agent, model: selectedModel }))
+        );
+    }, [selectedModel]);
 
 
     useEffect(() => {
@@ -70,7 +88,7 @@ const App: React.FC = () => {
             return;
         }
         if (!ai) {
-             setError("GoogleGenAI client could not be initialized. Check API Key.");
+             setError("GoogleGenAI client could not be initialized. Please provide a valid API Key.");
              return;
         }
 
@@ -161,6 +179,7 @@ const App: React.FC = () => {
         setFollowUpQuestions([]);
         setCurrentStep(0);
         setError(null);
+        // Do not reset API key or model selection
     };
 
     const STEPS = [t.steps.input, t.steps.agents, t.steps.summary];
@@ -193,6 +212,34 @@ const App: React.FC = () => {
                             <p>{error}</p>
                         </div>
                     )}
+                    
+                     {/* --- Settings Section for API Key and Model --- */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 p-4 rounded-lg bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm shadow-md">
+                        <div className="flex flex-col">
+                           <label htmlFor="apiKey" className="mb-2 font-semibold text-sm flex items-center"><KeyRound className="mr-2 h-4 w-4"/>{t.settings.apiKey}</label>
+                            <input
+                                id="apiKey"
+                                type="password"
+                                value={apiKey}
+                                onChange={(e) => setApiKey(e.target.value)}
+                                placeholder={t.settings.apiKeyPlaceholder}
+                                className="p-2 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 focus:ring-2 focus:ring-[var(--accent)]"
+                            />
+                        </div>
+                         <div className="flex flex-col">
+                           <label htmlFor="model" className="mb-2 font-semibold text-sm flex items-center"><WandSparkles className="mr-2 h-4 w-4"/>{t.settings.model}</label>
+                            <select
+                                id="model"
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                className="p-2 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 focus:ring-2 focus:ring-[var(--accent)]"
+                            >
+                                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                            </select>
+                        </div>
+                    </div>
+
 
                      <div className="w-full mb-8">
                         <div className="flex justify-between items-center">
@@ -220,8 +267,9 @@ const App: React.FC = () => {
                     {currentStep === 0 && (
                          <div className="animate-fadeIn">
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
-                                <DocumentInput t={t} docState={doc1} setDocState={setDoc1} theme={currentTheme} ai={ai}/>
-                                <DocumentInput t={t} docState={doc2} setDocState={setDoc2} theme={currentTheme} ai={ai}/>
+                                {/* Pass selectedModel to DocumentInput for OCR */}
+                                <DocumentInput t={t} docState={doc1} setDocState={setDoc1} theme={currentTheme} ai={ai} selectedModel={selectedModel} />
+                                <DocumentInput t={t} docState={doc2} setDocState={setDoc2} theme={currentTheme} ai={ai} selectedModel={selectedModel} />
                             </div>
                              <AgentEditor t={t} agents={agents} onUpdateAgent={handleUpdateAgent} agentCount={agentCount} setAgentCount={setAgentCount} theme={currentTheme}/>
 
